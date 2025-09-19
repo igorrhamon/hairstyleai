@@ -1,11 +1,10 @@
 import 'dotenv/config';
 import http, { IncomingMessage, ServerResponse } from 'node:http';
-import { GoogleGenAI, Modality, type GenerateContentResponse } from '@google/genai';
 
-type ReferenceImagePayload = {
-  base64Data: string;
-  mimeType: string;
-};
+import { HttpError } from './http-error';
+import { createGeminiProvider } from './providers/gemini';
+import { createOpenAIProvider } from './providers/openai';
+import type { ReferenceImagePayload } from './types';
 
 type SuggestionsRequestBody = {
   base64Data?: unknown;
@@ -17,37 +16,41 @@ type EditRequestBody = SuggestionsRequestBody & {
   referenceImage?: unknown;
 };
 
-type GeminiContentPart = {
-  text?: string;
-  inlineData?: {
-    mimeType: string;
-    data: string;
-  };
+type ProviderKey = 'gemini' | 'openai';
+
+type LlmProvider = {
+  name: string;
+  generateSuggestions(base64Data: string, mimeType: string): Promise<string>;
+  generateHairstyle(
+    base64Data: string,
+    mimeType: string,
+    prompt: string,
+    referenceImage: ReferenceImagePayload | null
+  ): Promise<string>;
 };
 
-class HttpError extends Error {
-  public statusCode: number;
-
-  constructor(message: string, statusCode = 500) {
-    super(message);
-    this.name = 'HttpError';
-    this.statusCode = statusCode;
-  }
-}
-
 const PORT = Number(process.env.PORT) || 3001;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const RAW_PROVIDER = (process.env.LLM_PROVIDER ?? 'gemini').toLowerCase();
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? '';
+const SUGGESTIONS_MODEL_ENV = process.env.SUGGESTIONS_MODEL;
+const IMAGE_MODEL_ENV = process.env.IMAGE_MODEL;
 const ALLOWED_ORIGIN = process.env.CORS_ORIGIN ?? '*';
 
-if (!GEMINI_API_KEY) {
-  console.error('A variável de ambiente GEMINI_API_KEY não foi definida.');
-  process.exit(1);
-}
+const DEFAULT_MODELS = {
+  gemini: {
+    suggestions: 'gemini-2.5-flash',
+    image: 'gemini-2.5-flash-image-preview',
+  },
+  openai: {
+    suggestions: 'gpt-4.1-mini',
+    image: 'gpt-image-1',
+  },
+} as const;
 
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-
-const SUGGESTIONS_PROMPT =
-  'Analise os traços faciais da pessoa nesta imagem (formato do rosto, testa, queixo, etc.). Com base nessa análise, sugira 3-4 estilos de penteado que a favoreceriam. Forneça uma breve justificativa (1-2 frases) para cada sugestão. Formate a resposta de forma clara e legível com títulos para cada estilo.';
+const providerKey = resolveProviderKey(RAW_PROVIDER);
+const provider: LlmProvider =
+  providerKey === 'openai' ? initializeOpenAIProvider() : initializeGeminiProvider();
 
 const server = http.createServer(async (req, res) => {
   const method = req.method ?? 'GET';
@@ -64,133 +67,76 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (method === 'POST' && url === '/api/gemini/suggestions') {
+    if (method === 'POST' && url === '/api/llm/suggestions') {
       const body = await parseJsonBody<SuggestionsRequestBody>(req);
       const base64Data = ensureNonEmptyString(body.base64Data, 'O campo "base64Data" é obrigatório.');
       const mimeType = ensureNonEmptyString(body.mimeType, 'O campo "mimeType" é obrigatório.');
 
-      const suggestions = await generateSuggestions(base64Data, mimeType);
+      const suggestions = await provider.generateSuggestions(base64Data, mimeType);
       sendJSON(res, 200, { suggestions });
       return;
     }
 
-    if (method === 'POST' && url === '/api/gemini/edit') {
+    if (method === 'POST' && url === '/api/llm/edit') {
       const body = await parseJsonBody<EditRequestBody>(req);
       const base64Data = ensureNonEmptyString(body.base64Data, 'O campo "base64Data" é obrigatório.');
       const mimeType = ensureNonEmptyString(body.mimeType, 'O campo "mimeType" é obrigatório.');
       const prompt = typeof body.prompt === 'string' ? body.prompt : '';
       const referenceImage = normalizeReferenceImage(body.referenceImage);
 
-      const image = await generateHairstyle(base64Data, mimeType, prompt, referenceImage);
+      const image = await provider.generateHairstyle(base64Data, mimeType, prompt, referenceImage);
       sendJSON(res, 200, { image });
       return;
     }
 
     sendJSON(res, 404, { message: 'Rota não encontrada.' });
   } catch (error) {
-    handleError(res, error);
+    handleError(res, error, provider.name);
   }
 });
 
 server.listen(PORT, () => {
-  console.log(`Servidor Gemini pronto em http://localhost:${PORT}`);
+  console.log(`Servidor ${provider.name} pronto em http://localhost:${PORT}`);
 });
 
-async function generateSuggestions(base64Data: string, mimeType: string): Promise<string> {
-  const userImagePart: GeminiContentPart = {
-    inlineData: {
-      data: base64Data,
-      mimeType,
-    },
-  };
+function resolveProviderKey(value: string): ProviderKey {
+  if (value === 'gemini' || value === 'openai') {
+    return value;
+  }
 
-  const textPart: GeminiContentPart = {
-    text: SUGGESTIONS_PROMPT,
-  };
+  if (value) {
+    console.warn(
+      `Valor de LLM_PROVIDER desconhecido "${value}". Utilizando "gemini" como padrão.`
+    );
+  }
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: { parts: [userImagePart, textPart] },
+  return 'gemini';
+}
+
+function initializeGeminiProvider(): LlmProvider {
+  if (!GEMINI_API_KEY) {
+    console.error('A variável de ambiente GEMINI_API_KEY não foi definida.');
+    process.exit(1);
+  }
+
+  return createGeminiProvider({
+    apiKey: GEMINI_API_KEY,
+    suggestionsModel: SUGGESTIONS_MODEL_ENV ?? DEFAULT_MODELS.gemini.suggestions,
+    imageModel: IMAGE_MODEL_ENV ?? DEFAULT_MODELS.gemini.image,
   });
-
-  const suggestions = response.text;
-  if (!suggestions) {
-    throw new HttpError('A IA não retornou sugestões. Tente novamente em instantes.', 502);
-  }
-
-  return suggestions.trim();
 }
 
-async function generateHairstyle(
-  base64Data: string,
-  mimeType: string,
-  prompt: string,
-  referenceImage: ReferenceImagePayload | null
-): Promise<string> {
-  const userImagePart: GeminiContentPart = {
-    inlineData: {
-      data: base64Data,
-      mimeType,
-    },
-  };
-
-  const parts: GeminiContentPart[] = [userImagePart];
-  let finalPrompt = `Aplique este estilo de cabelo na pessoa da imagem: ${prompt}`;
-
-  if (referenceImage) {
-    const referencePart: GeminiContentPart = {
-      inlineData: {
-        data: referenceImage.base64Data,
-        mimeType: referenceImage.mimeType,
-      },
-    };
-
-    parts.push(referencePart);
-    const promptFallback = prompt.trim() || 'o estilo da imagem de referência';
-    finalPrompt = `Usando o penteado da segunda imagem como principal referência visual, aplique um estilo semelhante na pessoa da primeira imagem. Use a seguinte descrição como guia adicional: ${promptFallback}.`;
+function initializeOpenAIProvider(): LlmProvider {
+  if (!OPENAI_API_KEY) {
+    console.error('A variável de ambiente OPENAI_API_KEY não foi definida.');
+    process.exit(1);
   }
 
-  parts.push({ text: finalPrompt });
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash-image-preview',
-    contents: {
-      parts,
-    },
-    config: {
-      responseModalities: [Modality.IMAGE, Modality.TEXT],
-    },
+  return createOpenAIProvider({
+    apiKey: OPENAI_API_KEY,
+    suggestionsModel: SUGGESTIONS_MODEL_ENV ?? DEFAULT_MODELS.openai.suggestions,
+    imageModel: IMAGE_MODEL_ENV ?? DEFAULT_MODELS.openai.image,
   });
-
-  if (response.promptFeedback?.blockReason) {
-    const { blockReason, blockReasonMessage } = response.promptFeedback;
-    const blockMessage = blockReasonMessage || blockReason || 'Solicitação bloqueada por motivos de segurança.';
-    throw new HttpError(`Sua solicitação foi bloqueada: ${blockMessage}`, 400);
-  }
-
-  const imagePart = findImagePart(response);
-  if (imagePart?.inlineData) {
-    return `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
-  }
-
-  const textPart = findTextPart(response);
-  if (textPart?.text) {
-    throw new HttpError(`A IA retornou uma mensagem em vez de uma imagem: "${textPart.text}"`, 502);
-  }
-
-  console.error('Gemini API não retornou uma imagem utilizável.', JSON.stringify(response, null, 2));
-  throw new HttpError(
-    'A IA não conseguiu gerar uma imagem. Tente ajustar a descrição ou utilizar outra imagem de referência.',
-    502
-  );
-}
-
-function findImagePart(response: GenerateContentResponse): GeminiContentPart | undefined {
-  return response.candidates?.[0]?.content?.parts?.find((part) => part.inlineData) as GeminiContentPart | undefined;
-}
-
-function findTextPart(response: GenerateContentResponse): GeminiContentPart | undefined {
-  return response.candidates?.[0]?.content?.parts?.find((part) => part.text) as GeminiContentPart | undefined;
 }
 
 function normalizeReferenceImage(value: unknown): ReferenceImagePayload | null {
@@ -203,8 +149,14 @@ function normalizeReferenceImage(value: unknown): ReferenceImagePayload | null {
   }
 
   const reference = value as Record<string, unknown>;
-  const base64Data = ensureNonEmptyString(reference.base64Data, 'O campo "referenceImage.base64Data" é obrigatório.');
-  const mimeType = ensureNonEmptyString(reference.mimeType, 'O campo "referenceImage.mimeType" é obrigatório.');
+  const base64Data = ensureNonEmptyString(
+    reference.base64Data,
+    'O campo "referenceImage.base64Data" é obrigatório.'
+  );
+  const mimeType = ensureNonEmptyString(
+    reference.mimeType,
+    'O campo "referenceImage.mimeType" é obrigatório.'
+  );
 
   return { base64Data, mimeType };
 }
@@ -254,14 +206,14 @@ function sendJSON(res: ServerResponse, statusCode: number, payload: Record<strin
   res.end(JSON.stringify(payload));
 }
 
-function handleError(res: ServerResponse, error: unknown): void {
+function handleError(res: ServerResponse, error: unknown, providerName: string): void {
   if (error instanceof HttpError) {
-    console.error('Erro tratado:', error.message);
+    console.error(`[${providerName}] Erro tratado:`, error.message);
     sendJSON(res, error.statusCode, { message: error.message });
     return;
   }
 
-  console.error('Erro inesperado ao comunicar com o Gemini:', error);
+  console.error(`[${providerName}] Erro inesperado ao comunicar com o provedor LLM:`, error);
   sendJSON(res, 500, {
     message: 'Erro interno do servidor. Consulte os logs para mais detalhes.',
   });
