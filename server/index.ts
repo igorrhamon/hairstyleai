@@ -66,6 +66,7 @@ const SUGGESTIONS_PROMPT =
 const server = http.createServer(async (req, res) => {
   const method = req.method ?? 'GET';
   const url = (req.url ?? '').split('?')[0];
+  const route = normalizeRoute(url);
 
   if (method === 'OPTIONS') {
     handleOptions(res);
@@ -73,12 +74,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    if (method === 'GET' && url === '/health') {
+    if (method === 'GET' && route === '/health') {
       sendJSON(res, 200, { status: 'ok' });
       return;
     }
 
-    if (method === 'POST' && url === '/api/llm/suggestions') {
+    if (method === 'POST' && route === '/api/llm/suggestions') {
       const body = await parseJsonBody<SuggestionsRequestBody>(req);
       const base64Data = ensureNonEmptyString(body.base64Data, 'O campo "base64Data" é obrigatório.');
       const mimeType = ensureNonEmptyString(body.mimeType, 'O campo "mimeType" é obrigatório.');
@@ -90,7 +91,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (method === 'POST' && url === '/api/llm/edit') {
+    if (method === 'POST' && route === '/api/llm/edit') {
       const body = await parseJsonBody<EditRequestBody>(req);
       const base64Data = ensureNonEmptyString(body.base64Data, 'O campo "base64Data" é obrigatório.');
       const mimeType = ensureNonEmptyString(body.mimeType, 'O campo "mimeType" é obrigatório.');
@@ -336,6 +337,14 @@ function handleError(res: ServerResponse, error: unknown): void {
   sendJSON(res, 500, {
     message: 'Erro interno do servidor. Consulte os logs para mais detalhes.',
   });
+}
+
+function normalizeRoute(url: string): string {
+  if (url.startsWith('/api/gemini/')) {
+    return `/api/llm/${url.slice('/api/gemini/'.length)}`;
+  }
+
+  return url;
 }
 
 function normalizeEnv(value: string | undefined): string {

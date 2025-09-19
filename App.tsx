@@ -20,7 +20,9 @@ const UNKNOWN_ERROR_MESSAGE = 'Ocorreu um erro desconhecido.';
 const NETWORK_ERROR_MESSAGE =
   'Não foi possível conectar ao servidor. Verifique sua conexão com a internet e se o backend está em execução.';
 
-const KNOWN_PROVIDER_OPTIONS = ['gemini'];
+const ENV_PROVIDER_OPTIONS = parseEnvList(import.meta.env?.VITE_LLM_PROVIDERS);
+const KNOWN_PROVIDER_OPTIONS =
+  ENV_PROVIDER_OPTIONS.length > 0 ? ENV_PROVIDER_OPTIONS : ['gemini'];
 const KNOWN_GENERATION_MODELS: Record<string, string[]> = {
   gemini: ['gemini-2.5-flash-image-preview', 'gemini-2.5-flash'],
 };
@@ -39,6 +41,19 @@ function uniqueList(...values: Array<string | undefined>): string[] {
   });
 
   return Array.from(unique);
+}
+
+function parseEnvList(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return uniqueList(
+    ...value
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
 }
 
 function formatProviderLabel(value: string): string {
@@ -129,7 +144,7 @@ const App: React.FC = () => {
     } finally {
       setIsSuggesting(false);
     }
-  }, [isLoading, isSuggesting, selectedGenerationModel, selectedProvider, selectedSuggestionsModel]);
+  }, [isLoading, isSuggesting, selectedProvider, selectedSuggestionsModel]);
 
   const handleGenerateHairstyle = useCallback(async () => {
     if (!cameraRef.current || isLoading || isSuggesting) return;

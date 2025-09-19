@@ -25,6 +25,7 @@ Esta aplicação React captura a imagem da webcam do usuário, envia para o back
    - `CORS_ORIGIN`: origem permitida para chamadas diretas ao backend.
    - `GEMINI_IMAGE_MODEL` e `GEMINI_SUGGESTION_MODEL`: modelos padrão usados pelo backend quando o provedor é o Gemini.
    - `VITE_API_BASE_URL`: URL utilizada pelo front-end para chegar ao backend (padrão: `/api`, que é atendido via proxy do Vite).
+   - `VITE_LLM_PROVIDERS`: lista de provedores exibidos no seletor do front-end (separados por vírgula). Se omitido, apenas o provedor padrão é mostrado.
    - `VITE_LLM_PROVIDER`, `VITE_LLM_MODEL` e `VITE_LLM_SUGGESTION_MODEL`: valores padrão para exibição e envio ao backend.
 
 O backend lê automaticamente as variáveis definidas em `.env` através do pacote `dotenv`.
@@ -56,6 +57,8 @@ O servidor exposto em `server/index.ts` oferece as seguintes rotas HTTP:
   - **Body**: `{ base64Data: string, mimeType: string, prompt: string, provider?: string, model?: string, referenceImage?: { base64Data: string, mimeType: string } }`
   - **Resposta**: `{ image?: string, text?: string }` (data URL contendo a imagem gerada e/ou uma resposta textual).
   - Gera uma nova imagem aplicando o estilo descrito (opcionalmente guiado por uma imagem de referência). Caso o provedor devolva somente texto, a mensagem é encaminhada ao front-end.
+
+- Rotas legadas `/api/gemini/suggestions` e `/api/gemini/edit` continuam disponíveis e encaminham para os mesmos fluxos acima, garantindo compatibilidade com integrações existentes.
 
 - `GET /health`
   - Retorna `{"status":"ok"}` e pode ser usado para checagens simples de disponibilidade.

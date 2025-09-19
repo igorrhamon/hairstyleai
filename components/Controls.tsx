@@ -133,9 +133,9 @@ export const Controls: React.FC<ControlsProps> = ({
                     </label>
                 </div>
                 <p className="text-xs text-gray-400">
-                    Usando <span className="text-gray-200">{formatProviderLabel(provider)}</span> com modelos
-                    <span className="text-gray-200"> {suggestionsModelLabel}</span> (sugestões) e
-                    <span className="text-gray-200"> {generationModelLabel}</span> (geração).
+                    Usando <span className="text-gray-200">{formatProviderLabel(provider)}</span> com modelos{' '}
+                    <span className="text-gray-200">{suggestionsModelLabel}</span> (sugestões) e{' '}
+                    <span className="text-gray-200">{generationModelLabel}</span> (geração).
                 </p>
             </div>
             <div className="w-full flex items-center gap-3">
