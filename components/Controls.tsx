@@ -23,6 +23,16 @@ interface ControlsProps {
     onGenerationModelChange: (model: string) => void;
 }
 
+const MODEL_PLACEHOLDER_EXAMPLES: Record<string, { suggestions: string; generation: string }> = {
+    gemini: {
+        suggestions: 'Ex.: gemini-2.5-flash',
+        generation: 'Ex.: gemini-2.5-flash-image-preview',
+    },
+};
+
+const FALLBACK_SUGGESTION_PLACEHOLDER = 'Ex.: modelo preferido para sugestões';
+const FALLBACK_GENERATION_PLACEHOLDER = 'Ex.: modelo preferido para imagens';
+
 export const Controls: React.FC<ControlsProps> = ({
     prompt,
     setPrompt,
@@ -51,6 +61,8 @@ export const Controls: React.FC<ControlsProps> = ({
     const suggestionsDatalistId = `llm-suggestions-${uniqueId}`;
     const suggestionsModelLabel = suggestionsModel.trim() || 'padrão do servidor';
     const generationModelLabel = generationModel.trim() || 'padrão do servidor';
+    const suggestionsPlaceholder = getModelPlaceholder(provider, 'suggestions');
+    const generationPlaceholder = getModelPlaceholder(provider, 'generation');
 
     const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
         if (event.key === 'Enter' && !isLoading && (prompt.trim() || referenceImage)) {
@@ -89,7 +101,7 @@ export const Controls: React.FC<ControlsProps> = ({
                             onChange={(event) => onSuggestionsModelChange(event.target.value)}
                             disabled={isLoading}
                             list={suggestionsModelOptions.length > 0 ? suggestionsDatalistId : undefined}
-                            placeholder="Ex.: gemini-2.5-flash"
+                            placeholder={suggestionsPlaceholder}
                             className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 disabled:opacity-70"
                         />
                         {suggestionsModelOptions.length > 0 && (
@@ -108,7 +120,7 @@ export const Controls: React.FC<ControlsProps> = ({
                             onChange={(event) => onGenerationModelChange(event.target.value)}
                             disabled={isLoading}
                             list={generationModelOptions.length > 0 ? generationDatalistId : undefined}
-                            placeholder="Ex.: gemini-2.5-flash-image-preview"
+                            placeholder={generationPlaceholder}
                             className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 disabled:opacity-70"
                         />
                         {generationModelOptions.length > 0 && (
@@ -200,4 +212,17 @@ function formatProviderLabel(value: string): string {
         .filter(Boolean)
         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
         .join(' ');
+}
+
+function getModelPlaceholder(provider: string, type: 'suggestions' | 'generation'): string {
+    const normalizedProvider = provider.trim().toLowerCase();
+    const examples = MODEL_PLACEHOLDER_EXAMPLES[normalizedProvider];
+
+    if (examples) {
+        return examples[type];
+    }
+
+    return type === 'suggestions'
+        ? FALLBACK_SUGGESTION_PLACEHOLDER
+        : FALLBACK_GENERATION_PLACEHOLDER;
 }

@@ -119,7 +119,6 @@ const App: React.FC = () => {
       }
       const newSuggestions = await getHairstyleSuggestions(frame.base64Data, frame.mimeType, {
         provider: selectedProvider,
-        model: selectedGenerationModel,
         suggestionsModel: selectedSuggestionsModel,
       });
       setSuggestions(newSuggestions);
