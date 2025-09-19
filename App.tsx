@@ -12,6 +12,23 @@ interface ReferenceImage {
   displayUrl: string;
 }
 
+const UNKNOWN_ERROR_MESSAGE = 'Ocorreu um erro desconhecido.';
+const NETWORK_ERROR_MESSAGE =
+  'Não foi possível conectar ao servidor. Verifique sua conexão com a internet e se o backend está em execução.';
+
+function getFriendlyErrorMessage(error: unknown): string {
+  if (error instanceof TypeError) {
+    return NETWORK_ERROR_MESSAGE;
+  }
+
+  if (error instanceof Error) {
+    const message = error.message?.trim();
+    return message || UNKNOWN_ERROR_MESSAGE;
+  }
+
+  return UNKNOWN_ERROR_MESSAGE;
+}
+
 const App: React.FC = () => {
   const [prompt, setPrompt] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -39,7 +56,7 @@ const App: React.FC = () => {
       const newSuggestions = await getHairstyleSuggestions(frame.base64Data, frame.mimeType);
       setSuggestions(newSuggestions);
     } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : 'Ocorreu um erro desconhecido.';
+      const errorMessage = getFriendlyErrorMessage(e);
       console.error(e);
       setError(errorMessage);
     } finally {
@@ -72,7 +89,7 @@ const App: React.FC = () => {
       
       setResultImage(newImage);
     } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : 'Ocorreu um erro desconhecido.';
+      const errorMessage = getFriendlyErrorMessage(e);
       console.error(e);
       setError(errorMessage);
       setResultImage(null);
