@@ -1,6 +1,6 @@
 {
   "name": "Provador de Penteados com IA",
-  "description": "Uma aplicação web que usa sua câmera e o poder do Gemini para permitir que você experimente diferentes penteados. Basta descrever um penteado ou enviar uma imagem de referência e ver o resultado em sua foto.",
+  "description": "Uma aplicação web que usa sua câmera e o poder de um provedor LLM configurável para permitir que você experimente diferentes penteados. Basta descrever um penteado ou enviar uma imagem de referência e ver o resultado em sua foto.",
   "requestFramePermissions": [
     "camera"
   ]

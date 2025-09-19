@@ -7,7 +7,12 @@ type ReferenceImagePayload = {
   mimeType: string;
 };
 
-type SuggestionsRequestBody = {
+type LlmRequestBase = {
+  provider?: unknown;
+  model?: unknown;
+};
+
+type SuggestionsRequestBody = LlmRequestBase & {
   base64Data?: unknown;
   mimeType?: unknown;
 };
@@ -17,12 +22,17 @@ type EditRequestBody = SuggestionsRequestBody & {
   referenceImage?: unknown;
 };
 
-type GeminiContentPart = {
+type LlmContentPart = {
   text?: string;
   inlineData?: {
     mimeType: string;
     data: string;
   };
+};
+
+type GeneratedContent = {
+  image: string | null;
+  text: string | null;
 };
 
 class HttpError extends Error {
@@ -38,6 +48,10 @@ class HttpError extends Error {
 const PORT = Number(process.env.PORT) || 3001;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ALLOWED_ORIGIN = process.env.CORS_ORIGIN ?? '*';
+const DEFAULT_PROVIDER = 'gemini';
+const DEFAULT_SUGGESTION_MODEL = normalizeEnv(process.env.GEMINI_SUGGESTION_MODEL) || 'gemini-2.5-flash';
+const DEFAULT_IMAGE_MODEL =
+  normalizeEnv(process.env.GEMINI_IMAGE_MODEL) || 'gemini-2.5-flash-image-preview';
 
 if (!GEMINI_API_KEY) {
   console.error('A variável de ambiente GEMINI_API_KEY não foi definida.');
@@ -64,25 +78,30 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (method === 'POST' && url === '/api/gemini/suggestions') {
+    if (method === 'POST' && url === '/api/llm/suggestions') {
       const body = await parseJsonBody<SuggestionsRequestBody>(req);
       const base64Data = ensureNonEmptyString(body.base64Data, 'O campo "base64Data" é obrigatório.');
       const mimeType = ensureNonEmptyString(body.mimeType, 'O campo "mimeType" é obrigatório.');
+      const provider = resolveProvider(body.provider);
+      const model = resolveModel(body.model, DEFAULT_SUGGESTION_MODEL);
 
-      const suggestions = await generateSuggestions(base64Data, mimeType);
+      const suggestions = await generateSuggestions(provider, base64Data, mimeType, model);
       sendJSON(res, 200, { suggestions });
       return;
     }
 
-    if (method === 'POST' && url === '/api/gemini/edit') {
+    if (method === 'POST' && url === '/api/llm/edit') {
       const body = await parseJsonBody<EditRequestBody>(req);
       const base64Data = ensureNonEmptyString(body.base64Data, 'O campo "base64Data" é obrigatório.');
       const mimeType = ensureNonEmptyString(body.mimeType, 'O campo "mimeType" é obrigatório.');
       const prompt = typeof body.prompt === 'string' ? body.prompt : '';
       const referenceImage = normalizeReferenceImage(body.referenceImage);
 
-      const image = await generateHairstyle(base64Data, mimeType, prompt, referenceImage);
-      sendJSON(res, 200, { image });
+      const provider = resolveProvider(body.provider);
+      const model = resolveModel(body.model, DEFAULT_IMAGE_MODEL);
+
+      const result = await generateHairstyle(provider, base64Data, mimeType, prompt, referenceImage, model);
+      sendJSON(res, 200, result);
       return;
     }
 
@@ -93,23 +112,40 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Servidor Gemini pronto em http://localhost:${PORT}`);
+  console.log(`Servidor LLM pronto em http://localhost:${PORT}`);
 });
 
-async function generateSuggestions(base64Data: string, mimeType: string): Promise<string> {
-  const userImagePart: GeminiContentPart = {
+async function generateSuggestions(
+  provider: string,
+  base64Data: string,
+  mimeType: string,
+  model: string
+): Promise<string> {
+  if (provider === 'gemini') {
+    return generateGeminiSuggestions(base64Data, mimeType, model);
+  }
+
+  throw new HttpError(`Provedor "${provider}" não é suportado pelo servidor.`, 400);
+}
+
+async function generateGeminiSuggestions(
+  base64Data: string,
+  mimeType: string,
+  model: string
+): Promise<string> {
+  const userImagePart: LlmContentPart = {
     inlineData: {
       data: base64Data,
       mimeType,
     },
   };
 
-  const textPart: GeminiContentPart = {
+  const textPart: LlmContentPart = {
     text: SUGGESTIONS_PROMPT,
   };
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model,
     contents: { parts: [userImagePart, textPart] },
   });
 
@@ -122,23 +158,39 @@ async function generateSuggestions(base64Data: string, mimeType: string): Promis
 }
 
 async function generateHairstyle(
+  provider: string,
   base64Data: string,
   mimeType: string,
   prompt: string,
-  referenceImage: ReferenceImagePayload | null
-): Promise<string> {
-  const userImagePart: GeminiContentPart = {
+  referenceImage: ReferenceImagePayload | null,
+  model: string
+): Promise<GeneratedContent> {
+  if (provider === 'gemini') {
+    return generateGeminiHairstyle(base64Data, mimeType, prompt, referenceImage, model);
+  }
+
+  throw new HttpError(`Provedor "${provider}" não é suportado pelo servidor.`, 400);
+}
+
+async function generateGeminiHairstyle(
+  base64Data: string,
+  mimeType: string,
+  prompt: string,
+  referenceImage: ReferenceImagePayload | null,
+  model: string
+): Promise<GeneratedContent> {
+  const userImagePart: LlmContentPart = {
     inlineData: {
       data: base64Data,
       mimeType,
     },
   };
 
-  const parts: GeminiContentPart[] = [userImagePart];
+  const parts: LlmContentPart[] = [userImagePart];
   let finalPrompt = `Aplique este estilo de cabelo na pessoa da imagem: ${prompt}`;
 
   if (referenceImage) {
-    const referencePart: GeminiContentPart = {
+    const referencePart: LlmContentPart = {
       inlineData: {
         data: referenceImage.base64Data,
         mimeType: referenceImage.mimeType,
@@ -153,7 +205,7 @@ async function generateHairstyle(
   parts.push({ text: finalPrompt });
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash-image-preview',
+    model,
     contents: {
       parts,
     },
@@ -169,28 +221,29 @@ async function generateHairstyle(
   }
 
   const imagePart = findImagePart(response);
-  if (imagePart?.inlineData) {
-    return `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
-  }
-
   const textPart = findTextPart(response);
-  if (textPart?.text) {
-    throw new HttpError(`A IA retornou uma mensagem em vez de uma imagem: "${textPart.text}"`, 502);
+  const image = imagePart?.inlineData
+    ? `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`
+    : null;
+  const text = textPart?.text ? textPart.text.trim() : null;
+
+  if (image || text) {
+    return { image, text };
   }
 
-  console.error('Gemini API não retornou uma imagem utilizável.', JSON.stringify(response, null, 2));
+  console.error('Provedor LLM não retornou uma imagem nem texto utilizável.', JSON.stringify(response, null, 2));
   throw new HttpError(
     'A IA não conseguiu gerar uma imagem. Tente ajustar a descrição ou utilizar outra imagem de referência.',
     502
   );
 }
 
-function findImagePart(response: GenerateContentResponse): GeminiContentPart | undefined {
-  return response.candidates?.[0]?.content?.parts?.find((part) => part.inlineData) as GeminiContentPart | undefined;
+function findImagePart(response: GenerateContentResponse): LlmContentPart | undefined {
+  return response.candidates?.[0]?.content?.parts?.find((part) => part.inlineData) as LlmContentPart | undefined;
 }
 
-function findTextPart(response: GenerateContentResponse): GeminiContentPart | undefined {
-  return response.candidates?.[0]?.content?.parts?.find((part) => part.text) as GeminiContentPart | undefined;
+function findTextPart(response: GenerateContentResponse): LlmContentPart | undefined {
+  return response.candidates?.[0]?.content?.parts?.find((part) => part.text) as LlmContentPart | undefined;
 }
 
 function normalizeReferenceImage(value: unknown): ReferenceImagePayload | null {
@@ -215,6 +268,24 @@ function ensureNonEmptyString(value: unknown, message: string): string {
   }
 
   return value;
+}
+
+function resolveProvider(value: unknown): string {
+  const provider = typeof value === 'string' && value.trim() ? value.trim() : DEFAULT_PROVIDER;
+
+  if (provider !== 'gemini') {
+    throw new HttpError(`Provedor "${provider}" não é suportado pelo servidor.`, 400);
+  }
+
+  return provider;
+}
+
+function resolveModel(value: unknown, fallback: string): string {
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim();
+  }
+
+  return fallback;
 }
 
 async function parseJsonBody<T>(req: IncomingMessage): Promise<T> {
@@ -261,8 +332,12 @@ function handleError(res: ServerResponse, error: unknown): void {
     return;
   }
 
-  console.error('Erro inesperado ao comunicar com o Gemini:', error);
+  console.error('Erro inesperado ao comunicar com o provedor LLM:', error);
   sendJSON(res, 500, {
     message: 'Erro interno do servidor. Consulte os logs para mais detalhes.',
   });
+}
+
+function normalizeEnv(value: string | undefined): string {
+  return typeof value === 'string' ? value.trim() : '';
 }

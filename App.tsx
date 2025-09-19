@@ -1,9 +1,13 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { CameraFeed, CameraFeedRef } from './components/CameraFeed';
 import { Controls } from './components/Controls';
 import { Header } from './components/Header';
 import { Spinner } from './components/Spinner';
-import { editImageWithHairstyle, getHairstyleSuggestions } from './services/geminiService';
+import {
+  editImageWithHairstyle,
+  getHairstyleSuggestions,
+  DEFAULT_LLM_OPTIONS,
+} from './services/llmService';
 import { CameraIcon, SparklesIcon, ExclamationTriangleIcon, ArrowUturnLeftIcon, ArrowDownTrayIcon, LightBulbIcon, XMarkIcon } from './components/Icons';
 
 interface ReferenceImage {
@@ -15,6 +19,39 @@ interface ReferenceImage {
 const UNKNOWN_ERROR_MESSAGE = 'Ocorreu um erro desconhecido.';
 const NETWORK_ERROR_MESSAGE =
   'Não foi possível conectar ao servidor. Verifique sua conexão com a internet e se o backend está em execução.';
+
+const KNOWN_PROVIDER_OPTIONS = ['gemini'];
+const KNOWN_GENERATION_MODELS: Record<string, string[]> = {
+  gemini: ['gemini-2.5-flash-image-preview', 'gemini-2.5-flash'],
+};
+const KNOWN_SUGGESTION_MODELS: Record<string, string[]> = {
+  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+};
+
+function uniqueList(...values: Array<string | undefined>): string[] {
+  const unique = new Set<string>();
+
+  values.forEach((value) => {
+    const trimmed = value?.trim();
+    if (trimmed) {
+      unique.add(trimmed);
+    }
+  });
+
+  return Array.from(unique);
+}
+
+function formatProviderLabel(value: string): string {
+  if (!value) {
+    return 'Padrão do servidor';
+  }
+
+  return value
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
 
 function getFriendlyErrorMessage(error: unknown): string {
   if (error instanceof TypeError) {
@@ -36,10 +73,37 @@ const App: React.FC = () => {
   const [suggestions, setSuggestions] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resultImage, setResultImage] = useState<string | null>(null);
+  const [resultText, setResultText] = useState<string | null>(null);
   const [isCameraReady, setIsCameraReady] = useState<boolean>(false);
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
-  
+  const [selectedProvider, setSelectedProvider] = useState<string>(DEFAULT_LLM_OPTIONS.provider);
+  const [selectedGenerationModel, setSelectedGenerationModel] = useState<string>(DEFAULT_LLM_OPTIONS.model);
+  const [selectedSuggestionsModel, setSelectedSuggestionsModel] = useState<string>(
+    DEFAULT_LLM_OPTIONS.suggestionsModel
+  );
+
   const cameraRef = useRef<CameraFeedRef>(null);
+
+  const providerOptions = useMemo(
+    () => uniqueList(DEFAULT_LLM_OPTIONS.provider, selectedProvider, ...KNOWN_PROVIDER_OPTIONS),
+    [selectedProvider]
+  );
+  const generationModelOptions = useMemo(() => {
+    const known = KNOWN_GENERATION_MODELS[selectedProvider] ?? [];
+    return uniqueList(DEFAULT_LLM_OPTIONS.model, selectedGenerationModel, ...known);
+  }, [selectedProvider, selectedGenerationModel]);
+  const suggestionsModelOptions = useMemo(() => {
+    const known = KNOWN_SUGGESTION_MODELS[selectedProvider] ?? [];
+    return uniqueList(
+      DEFAULT_LLM_OPTIONS.suggestionsModel,
+      DEFAULT_LLM_OPTIONS.model,
+      selectedSuggestionsModel,
+      ...known
+    );
+  }, [selectedProvider, selectedSuggestionsModel]);
+  const providerDisplayName = useMemo(() => formatProviderLabel(selectedProvider), [selectedProvider]);
+  const suggestionsModelLabel = selectedSuggestionsModel.trim() || 'padrão do servidor';
+  const generationModelLabel = selectedGenerationModel.trim() || 'padrão do servidor';
 
   const handleSuggestHairstyles = useCallback(async () => {
     if (!cameraRef.current || isLoading || isSuggesting) return;
@@ -53,7 +117,11 @@ const App: React.FC = () => {
       if (!frame) {
         throw new Error('Não foi possível capturar a imagem da câmera.');
       }
-      const newSuggestions = await getHairstyleSuggestions(frame.base64Data, frame.mimeType);
+      const newSuggestions = await getHairstyleSuggestions(frame.base64Data, frame.mimeType, {
+        provider: selectedProvider,
+        model: selectedGenerationModel,
+        suggestionsModel: selectedSuggestionsModel,
+      });
       setSuggestions(newSuggestions);
     } catch (e) {
       const errorMessage = getFriendlyErrorMessage(e);
@@ -62,13 +130,14 @@ const App: React.FC = () => {
     } finally {
       setIsSuggesting(false);
     }
-  }, [isLoading, isSuggesting]);
+  }, [isLoading, isSuggesting, selectedGenerationModel, selectedProvider, selectedSuggestionsModel]);
 
   const handleGenerateHairstyle = useCallback(async () => {
     if (!cameraRef.current || isLoading || isSuggesting) return;
 
     setIsLoading(true);
     setError(null);
+    setResultText(null);
 
     try {
       const frame = cameraRef.current.captureFrame();
@@ -76,27 +145,35 @@ const App: React.FC = () => {
         throw new Error('Não foi possível capturar a imagem da câmera.');
       }
 
-      const newImage = await editImageWithHairstyle(
-        frame.base64Data, 
-        frame.mimeType, 
+      const { image: newImage, text: newText } = await editImageWithHairstyle(
+        frame.base64Data,
+        frame.mimeType,
         prompt,
-        referenceImage ? { base64Data: referenceImage.base64Data, mimeType: referenceImage.mimeType } : null
+        referenceImage ? { base64Data: referenceImage.base64Data, mimeType: referenceImage.mimeType } : null,
+        {
+          provider: selectedProvider,
+          model: selectedGenerationModel,
+        }
       );
-      
-      if (!newImage) {
-        throw new Error('A IA não conseguiu gerar uma imagem. Tente uma descrição ou imagem de referência diferente.');
-      }
-      
       setResultImage(newImage);
+      setResultText(newText);
     } catch (e) {
       const errorMessage = getFriendlyErrorMessage(e);
       console.error(e);
       setError(errorMessage);
       setResultImage(null);
+      setResultText(null);
     } finally {
       setIsLoading(false);
     }
-  }, [prompt, isLoading, isSuggesting, referenceImage]);
+  }, [
+    prompt,
+    isLoading,
+    isSuggesting,
+    referenceImage,
+    selectedGenerationModel,
+    selectedProvider,
+  ]);
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -123,6 +200,7 @@ const App: React.FC = () => {
 
   const handleTryAgain = () => {
     setResultImage(null);
+    setResultText(null);
     setError(null);
     setPrompt('');
     setReferenceImage(null);
@@ -168,8 +246,8 @@ const App: React.FC = () => {
 
         {suggestions && !isSuggesting && !isLoading && !resultImage && (
           <div className="w-full bg-gray-800 border border-purple-500/50 p-4 rounded-2xl relative shadow-lg transition-all">
-              <button 
-                  onClick={() => setSuggestions(null)} 
+              <button
+                  onClick={() => setSuggestions(null)}
                   className="absolute top-3 right-3 text-gray-400 hover:text-white transition-colors"
                   aria-label="Fechar sugestões"
               >
@@ -180,6 +258,29 @@ const App: React.FC = () => {
                   Sugestões da IA
               </h3>
               <div className="text-gray-300 whitespace-pre-wrap max-h-48 overflow-y-auto pr-2 text-sm sm:text-base">{suggestions}</div>
+          </div>
+        )}
+
+        {resultText && !isLoading && (
+          <div className="w-full bg-gray-800 border border-purple-500/50 p-4 rounded-2xl relative shadow-lg transition-all">
+            <h3 className="text-lg font-bold text-purple-400 mb-2 flex items-center gap-2">
+              <SparklesIcon className="w-6 h-6" />
+              Resposta da IA ({providerDisplayName})
+            </h3>
+            <div className="text-gray-300 whitespace-pre-wrap max-h-60 overflow-y-auto pr-2 text-sm sm:text-base">
+              {resultText}
+            </div>
+            {!resultImage && (
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={handleTryAgain}
+                  className="inline-flex items-center gap-2 text-sm font-semibold text-purple-300 hover:text-white transition-colors"
+                >
+                  <ArrowUturnLeftIcon className="w-4 h-4" />
+                  Nova tentativa
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -222,11 +323,24 @@ const App: React.FC = () => {
             onImageUpload={handleImageUpload}
             referenceImage={referenceImage?.displayUrl || null}
             onRemoveReferenceImage={handleRemoveReferenceImage}
+            provider={selectedProvider}
+            providerOptions={providerOptions}
+            onProviderChange={setSelectedProvider}
+            suggestionsModel={selectedSuggestionsModel}
+            suggestionsModelOptions={suggestionsModelOptions}
+            onSuggestionsModelChange={setSelectedSuggestionsModel}
+            generationModel={selectedGenerationModel}
+            generationModelOptions={generationModelOptions}
+            onGenerationModelChange={setSelectedGenerationModel}
           />
         )}
       </main>
       <footer className="text-center text-gray-500 mt-8 text-sm">
-          <p>Criado com React, Tailwind CSS, e a magia da API Gemini.</p>
+          <p>
+            Criado com React, Tailwind CSS e impulsionado por {providerDisplayName}. Modelos ativos: sugestões —{' '}
+            <span className="text-gray-300">{suggestionsModelLabel}</span>; imagem —{' '}
+            <span className="text-gray-300">{generationModelLabel}</span>.
+          </p>
       </footer>
     </div>
   );

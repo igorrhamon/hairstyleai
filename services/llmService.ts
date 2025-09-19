@@ -1,11 +1,19 @@
 const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '');
+const FALLBACK_PROVIDER = 'gemini';
+const FALLBACK_IMAGE_MODEL = 'gemini-2.5-flash-image-preview';
+const FALLBACK_SUGGESTION_MODEL = 'gemini-2.5-flash';
+
+const JSON_HEADERS: HeadersInit = {
+  'Content-Type': 'application/json',
+};
 
 interface SuggestionsResponse {
   suggestions: string;
 }
 
 interface EditImageResponse {
-  image: string;
+  image?: string;
+  text?: string;
 }
 
 interface ReferenceImagePayload {
@@ -17,14 +25,46 @@ interface ErrorResponseBody {
   message?: string;
 }
 
-const JSON_HEADERS: HeadersInit = {
-  'Content-Type': 'application/json',
+export interface LlmRequestOptions {
+  provider?: string;
+  model?: string;
+  suggestionsModel?: string;
+}
+
+export interface LlmEditResult {
+  image: string | null;
+  text: string | null;
+}
+
+type RequiredLlmOptions = {
+  provider: string;
+  model: string;
+  suggestionsModel: string;
 };
 
-export async function getHairstyleSuggestions(base64Data: string, mimeType: string): Promise<string> {
-  const response = await postJSON<SuggestionsResponse>('/gemini/suggestions', {
+export const DEFAULT_LLM_PROVIDER = normalizeEnv(import.meta.env?.VITE_LLM_PROVIDER) || FALLBACK_PROVIDER;
+export const DEFAULT_LLM_MODEL = normalizeEnv(import.meta.env?.VITE_LLM_MODEL) || FALLBACK_IMAGE_MODEL;
+export const DEFAULT_LLM_SUGGESTION_MODEL =
+  normalizeEnv(import.meta.env?.VITE_LLM_SUGGESTION_MODEL) ||
+  normalizeEnv(import.meta.env?.VITE_LLM_MODEL) ||
+  FALLBACK_SUGGESTION_MODEL;
+
+export const DEFAULT_LLM_OPTIONS: RequiredLlmOptions = Object.freeze({
+  provider: DEFAULT_LLM_PROVIDER,
+  model: DEFAULT_LLM_MODEL,
+  suggestionsModel: DEFAULT_LLM_SUGGESTION_MODEL,
+});
+
+export async function getHairstyleSuggestions(
+  base64Data: string,
+  mimeType: string,
+  options: LlmRequestOptions = {}
+): Promise<string> {
+  const response = await postJSON<SuggestionsResponse>('/llm/suggestions', {
     base64Data,
     mimeType,
+    provider: resolveProvider(options.provider),
+    model: resolveModel(options.suggestionsModel ?? options.model, DEFAULT_LLM_SUGGESTION_MODEL),
   });
 
   if (typeof response.suggestions !== 'string' || !response.suggestions.trim()) {
@@ -38,20 +78,39 @@ export async function editImageWithHairstyle(
   base64ImageData: string,
   mimeType: string,
   prompt: string,
-  referenceImage: ReferenceImagePayload | null
-): Promise<string> {
-  const response = await postJSON<EditImageResponse>('/gemini/edit', {
+  referenceImage: ReferenceImagePayload | null,
+  options: LlmRequestOptions = {}
+): Promise<LlmEditResult> {
+  const response = await postJSON<EditImageResponse>('/llm/edit', {
     base64Data: base64ImageData,
     mimeType,
     prompt,
     referenceImage: referenceImage ?? null,
+    provider: resolveProvider(options.provider),
+    model: resolveModel(options.model, DEFAULT_LLM_MODEL),
   });
 
-  if (typeof response.image !== 'string' || !response.image.trim()) {
-    throw new Error('O servidor não retornou a imagem gerada.');
+  const image = typeof response.image === 'string' && response.image.trim() ? response.image : null;
+  const text = typeof response.text === 'string' && response.text.trim() ? response.text : null;
+
+  if (!image && !text) {
+    throw new Error('O servidor não retornou conteúdo gerado.');
   }
 
-  return response.image;
+  return { image, text };
+}
+
+function resolveProvider(provider?: string): string {
+  return provider?.trim() || DEFAULT_LLM_PROVIDER;
+}
+
+function resolveModel(model: string | undefined, fallback: string): string {
+  const normalizedModel = model?.trim();
+  if (normalizedModel) {
+    return normalizedModel;
+  }
+
+  return fallback;
 }
 
 async function postJSON<T>(path: string, payload: unknown): Promise<T> {
@@ -131,4 +190,8 @@ function buildUrl(path: string): string {
   }
 
   return `${API_BASE_URL}${normalizedPath}`;
+}
+
+function normalizeEnv(value: string | undefined): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
