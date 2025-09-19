@@ -1,122 +1,134 @@
-import { GoogleGenAI, Modality, GenerateContentResponse } from "@google/genai";
-import type { Part } from '../types';
+const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '');
 
-const API_KEY = process.env.API_KEY;
-
-if (!API_KEY) {
-  throw new Error("API_KEY environment variable is not set.");
+interface SuggestionsResponse {
+  suggestions: string;
 }
 
-const ai = new GoogleGenAI({ apiKey: API_KEY });
+interface EditImageResponse {
+  image: string;
+}
 
-export async function getHairstyleSuggestions(
-    base64ImageData: string,
-    mimeType: string
-): Promise<string> {
-    try {
-        const userImagePart = {
-            inlineData: {
-                data: base64ImageData,
-                mimeType: mimeType,
-            },
-        };
+interface ReferenceImagePayload {
+  base64Data: string;
+  mimeType: string;
+}
 
-        const prompt = "Analise os traços faciais da pessoa nesta imagem (formato do rosto, testa, queixo, etc.). Com base nessa análise, sugira 3-4 estilos de penteado que a favoreceriam. Forneça uma breve justificativa (1-2 frases) para cada sugestão. Formate a resposta de forma clara e legível com títulos para cada estilo.";
+interface ErrorResponseBody {
+  message?: string;
+}
 
-        const textPart = {
-            text: prompt,
-        };
+const JSON_HEADERS: HeadersInit = {
+  'Content-Type': 'application/json',
+};
 
-        const response: GenerateContentResponse = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: { parts: [userImagePart, textPart] },
-        });
+export async function getHairstyleSuggestions(base64Data: string, mimeType: string): Promise<string> {
+  const response = await postJSON<SuggestionsResponse>('/gemini/suggestions', {
+    base64Data,
+    mimeType,
+  });
 
-        return response.text;
-    } catch (error) {
-        console.error("Error calling Gemini API for suggestions:", error);
-        throw new Error("Falha ao buscar sugestões da IA. Verifique o console para mais detalhes.");
-    }
+  if (typeof response.suggestions !== 'string' || !response.suggestions.trim()) {
+    throw new Error('O servidor não retornou sugestões válidas.');
+  }
+
+  return response.suggestions;
 }
 
 export async function editImageWithHairstyle(
-    base64ImageData: string,
-    mimeType: string,
-    prompt: string,
-    referenceImage: { base64Data: string; mimeType: string } | null
-): Promise<string | null> {
-    try {
-        const userImagePart = {
-            inlineData: {
-                data: base64ImageData,
-                mimeType: mimeType,
-            },
-        };
+  base64ImageData: string,
+  mimeType: string,
+  prompt: string,
+  referenceImage: ReferenceImagePayload | null
+): Promise<string> {
+  const response = await postJSON<EditImageResponse>('/gemini/edit', {
+    base64Data: base64ImageData,
+    mimeType,
+    prompt,
+    referenceImage: referenceImage ?? null,
+  });
 
-        const parts: Part[] = [userImagePart];
-        let finalPrompt = `Aplique este estilo de cabelo na pessoa da imagem: ${prompt}`;
+  if (typeof response.image !== 'string' || !response.image.trim()) {
+    throw new Error('O servidor não retornou a imagem gerada.');
+  }
 
-        if (referenceImage) {
-            const referenceImagePart = {
-                inlineData: {
-                    data: referenceImage.base64Data,
-                    mimeType: referenceImage.mimeType,
-                },
-            };
-            parts.push(referenceImagePart);
-            finalPrompt = `Usando o penteado da segunda imagem como principal referência visual, aplique um estilo semelhante na pessoa da primeira imagem. Use a seguinte descrição como guia adicional: ${prompt || 'o estilo da imagem de referência'}.`;
-        }
-        
-        const textPart = {
-            text: finalPrompt,
-        };
-        parts.push(textPart);
+  return response.image;
+}
 
-        const response: GenerateContentResponse = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image-preview',
-            contents: {
-                parts: parts,
-            },
-            config: {
-                responseModalities: [Modality.IMAGE, Modality.TEXT],
-            },
-        });
-        
-        // Verifica se a requisição foi bloqueada por motivos de segurança.
-        if (response.promptFeedback?.blockReason) {
-            const { blockReason, blockReasonMessage } = response.promptFeedback;
-            console.error(`Request blocked due to ${blockReason}. Message: ${blockReasonMessage}`);
-            throw new Error(`Sua solicitação foi bloqueada: ${blockReasonMessage || blockReason}`);
-        }
+async function postJSON<T>(path: string, payload: unknown): Promise<T> {
+  const url = buildUrl(path);
 
-        const imagePartResponse = response.candidates?.[0]?.content?.parts?.find(
-          (part: Part) => part.inlineData
-        );
-        
-        if (imagePartResponse && imagePartResponse.inlineData) {
-            const base64ImageBytes: string = imagePartResponse.inlineData.data;
-            return `data:${imagePartResponse.inlineData.mimeType};base64,${base64ImageBytes}`;
-        }
-
-        // Se nenhuma imagem for encontrada, verifica se há uma resposta de texto para fornecer um erro melhor.
-        const textPartResponse = response.candidates?.[0]?.content?.parts?.find(
-            (part: Part) => part.text
-        );
-
-        if (textPartResponse && textPartResponse.text) {
-            console.error("Gemini API returned a text response instead of an image:", textPartResponse.text);
-            throw new Error(`A IA retornou uma mensagem em vez de uma imagem: "${textPartResponse.text}"`);
-        }
-        
-        console.error("Gemini API response did not contain a usable image part.", JSON.stringify(response, null, 2));
-        return null;
-
-    } catch (error) {
-        console.error("Error calling Gemini API:", error);
-        // Re-lança o erro para que a mensagem específica (de bloqueio, etc.) seja exibida na UI.
-        if (error instanceof Error) {
-            throw error;
-        }
-        throw new Error("Falha ao comunicar com a API do Gemini. Verifique o console para mais detalhes.");
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(
+        'Não foi possível conectar ao servidor. Verifique sua conexão com a internet e se o backend está em execução.'
+      );
     }
+
+    if (error instanceof Error) {
+      throw error;
+    }
+
+    throw new Error('Falha desconhecida ao comunicar com o servidor.');
+  }
+
+  const parsedBody = await parseResponseBody(response);
+
+  if (!response.ok) {
+    const message = extractErrorMessage(parsedBody);
+    throw new Error(message);
+  }
+
+  if (parsedBody === null || typeof parsedBody !== 'object') {
+    throw new Error('Resposta inválida do servidor.');
+  }
+
+  return parsedBody as T;
+}
+
+async function parseResponseBody(response: Response): Promise<unknown> {
+  const contentType = response.headers.get('content-type') ?? '';
+
+  if (contentType.includes('application/json')) {
+    try {
+      return await response.json();
+    } catch (error) {
+      console.error('Falha ao interpretar o JSON retornado pelo servidor.', error);
+      return null;
+    }
+  }
+
+  const text = await response.text();
+  return text || null;
+}
+
+function extractErrorMessage(body: unknown): string {
+  if (body && typeof body === 'object' && 'message' in body && typeof (body as ErrorResponseBody).message === 'string') {
+    const message = (body as ErrorResponseBody).message?.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  if (typeof body === 'string' && body.trim()) {
+    return body;
+  }
+
+  return 'Falha ao comunicar com o servidor. Tente novamente mais tarde.';
+}
+
+function buildUrl(path: string): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+  if (!API_BASE_URL) {
+    return normalizedPath;
+  }
+
+  return `${API_BASE_URL}${normalizedPath}`;
 }

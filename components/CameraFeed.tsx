@@ -19,24 +19,68 @@ export const CameraFeed = forwardRef<CameraFeedRef, CameraFeedProps>(({ onReady,
 
     const startStream = async () => {
         try {
+            // Verifica suporte a mediaDevices
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                throw new Error('Este navegador não suporta acesso à câmera (getUserMedia API)');
+            }
+
+            console.log('Iniciando acesso à câmera...');
+
+            // Lista dispositivos disponíveis
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            console.log('Câmeras disponíveis:', videoDevices.length);
+            videoDevices.forEach((device, index) => {
+                console.log(`Câmera ${index + 1}:`, device.label || 'Sem nome');
+            });
+
+            // Para câmera anterior se existir
             if (stream) {
+                console.log('Parando stream anterior...');
                 stream.getTracks().forEach(track => track.stop());
             }
-            const newStream = await navigator.mediaDevices.getUserMedia({ 
+
+            // Tenta obter acesso à câmera
+            console.log('Solicitando acesso à câmera...');
+            const constraints = {
                 video: { 
                     width: { ideal: 512 }, 
                     height: { ideal: 512 },
-                    facingMode: 'user' 
-                } 
-            });
+                    facingMode: 'user',
+                    // Se houver câmeras disponíveis, tenta usar a primeira
+                    ...(videoDevices.length > 0 ? { deviceId: { exact: videoDevices[0].deviceId } } : {})
+                }
+            };
+            console.log('Usando constraints:', constraints);
+
+            const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+            console.log('Stream obtido com sucesso');
+
             if (videoRef.current) {
+                console.log('Configurando video element...');
                 videoRef.current.srcObject = newStream;
+                videoRef.current.onloadedmetadata = () => {
+                    console.log('Metadados do vídeo carregados:', {
+                        width: videoRef.current?.videoWidth,
+                        height: videoRef.current?.videoHeight
+                    });
+                };
+            } else {
+                console.warn('Elemento de vídeo não encontrado');
             }
+
             setStream(newStream);
             onReady();
+            console.log('Câmera inicializada com sucesso');
+
         } catch (err) {
-            console.error("Erro ao acessar a câmera:", err);
-            onError("Não foi possível acessar a câmera. Por favor, verifique as permissões no seu navegador.");
+            const errorMessage = err instanceof Error ? err.message : 'Erro desconhecido';
+            console.error('Erro detalhado ao acessar a câmera:', {
+                name: err instanceof Error ? err.name : 'Unknown',
+                message: errorMessage,
+                fullError: err
+            });
+            onError(`Erro ao acessar a câmera: ${errorMessage}`);
         }
     };
     
@@ -86,7 +130,18 @@ export const CameraFeed = forwardRef<CameraFeedRef, CameraFeedProps>(({ onReady,
                 playsInline
                 muted
                 className={`w-full h-full object-cover ${isMirrored ? 'transform scale-x-[-1]' : ''}`}
-                onCanPlay={() => videoRef.current?.play()}
+                onCanPlay={() => {
+                    console.log('Vídeo pronto para reprodução');
+                    videoRef.current?.play().catch(e => {
+                        console.error('Erro ao iniciar reprodução:', e);
+                        onError('Não foi possível iniciar a reprodução do vídeo');
+                    });
+                }}
+                onError={(e) => {
+                    const error = (e.target as HTMLVideoElement).error;
+                    console.error('Erro no elemento de vídeo:', error);
+                    onError(`Erro na reprodução do vídeo: ${error?.message || 'Erro desconhecido'}`);
+                }}
             />
             <canvas ref={canvasRef} className="hidden" />
         </>
